@@ -1,0 +1,26 @@
+{
+    "id": "CD9567EB",
+    "path": "~/Documents/Data_Science/Diplo_Datos/AprendizajeProfundo/docs/Practico.Rmd",
+    "project_path": "Practico.Rmd",
+    "type": "r_markdown",
+    "hash": "4048331614",
+    "contents": "",
+    "dirty": false,
+    "created": 1616336655951.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "tempName": "Untitled1",
+        "cursorPosition": "11,2",
+        "scrollLine": "5",
+        "ignored_words": "style,html,widget,margin,mlp,parametros,Rate,Weight,Decay,Softmax,Relu,batchs,max,pooling,avg,cnn\n"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1616361923,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1616361923643,
+    "read_only": false,
+    "read_only_alternatives": []
+}

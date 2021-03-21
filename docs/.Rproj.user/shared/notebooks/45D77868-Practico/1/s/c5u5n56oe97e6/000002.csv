@@ -1,0 +1,6 @@
+"0","# Instalar el paquete pacman que permite instalar y/o cargar los paquetes necesarios"
+"0","if (!require(""pacman"")) install.packages(""pacman"", repos = 'http://cran.us.r-project.org')"
+"0",""
+"0","# Instalar o cargar los paquetes necesarios"
+"0","pacman::p_load(""dplyr"", ""here"", ""fs"", ""kableExtra"", ""knitr"", ""vroom"")"
+"0",""

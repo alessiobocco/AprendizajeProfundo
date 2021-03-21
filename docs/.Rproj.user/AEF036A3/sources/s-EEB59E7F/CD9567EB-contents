@@ -1,0 +1,707 @@
+---
+title: "Redes Neuronales para la clasificación de textos"
+
+author:
+  - Bocco, Alessio (boccoalessio@gmail.com)
+  - Maldonado, Florencia (maldonado.florenciam@gmail.com)
+  - Ramello de la Vega, Agustín (a.ramellodelavega@gmail.com)
+  - Rubio, Ariel (arubio@novix.com)
+  - Torres, Gonzalo (gonza.nicolastorres@gmail.com)
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output:
+  bookdown::pdf_document2:
+  #bookdown::html_document2:
+    theme: united
+    css: styles.css
+always_allow_html: true
+classoption: 12pt
+#csl: elsevier-harvard.csl
+
+header-includes:
+    - \usepackage{setspace}
+    - \usepackage{lineno}
+    - \usepackage{float}
+    - \usepackage{caption}
+    - \usepackage{chngcntr}
+    - \floatstyle{ruled}
+    - \newfloat{codechunk}{htbp}{chk}
+    - \floatname{codechunk}{Source Code}
+    - \floatplacement{figure}{H} #make every figure with caption = h
+---
+
+<style>
+.html-widget {
+    margin: auto;
+}
+</style>
+
+```{r, echo = FALSE, include = FALSE}
+# Instalar el paquete pacman que permite instalar y/o cargar los paquetes necesarios
+if (!require("pacman")) install.packages("pacman", repos = 'http://cran.us.r-project.org')
+
+# Instalar o cargar los paquetes necesarios
+pacman::p_load("dplyr", "here", "fs", "kableExtra", "knitr", "vroom")
+
+```
+
+# Introducción 
+
+El presente informe corresponde al práctico de Aprendizaje Profundo de la Diplomatura en Ciencia de Datos (UNC) realizado por el grupo 3.El práctico consistió en la clasificación de títulos de productos vendidos por Mercado Libre en distintas categorías. A continuación se hace una breve descripción del dataset de train. El mismo consta de 6119100 observaciones y cuatro variables. Sólo las variables `tittle` y `category` serán utilizadas ya que se han filtrado los títulos en idioma español y no se considerará la calidad de la observación en el entrenamiento de los modelos. 
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+dataset_train <- vroom::vroom("/Users/alessiobocco/Documents/Data_Science/Diplo_Datos/AprendizajeProfundo/data/meli-challenge-2019/spanish.train.csv")
+```
+```{r, echo = FALSE}
+knitr::kable(dataset_train[1:10,]) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+Si bien no se realizó un análisis exploratorio de los datos, las categorías se encuentran desbalanceadas. En la Figura \@ref(fig:histograma) se muestra una histograma con la cantidad de observaciones por categoría. 
+
+```{r histograma, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Histograma de observaciones por categoría "}
+categorias <- dataset_train %>%
+  dplyr::group_by(category) %>%
+  dplyr::summarise(cantidad = n())
+
+ggplot2::ggplot(data = categorias, ggplot2::aes(x = category, y = cantidad)) +
+  ggplot2::geom_histogram(stat = 'identity') +
+  ggplot2::theme_bw() +
+  ggplot2::theme(axis.title.x=ggplot2::element_blank(),
+                 axis.text.x=ggplot2::element_blank(),
+                 axis.ticks.x=ggplot2::element_blank()) +
+  ggplot2::xlab('Categorias') + ggplot2::ylab('Cantidad')
+
+```
+
+Analizar el dataset no forma parte del práctico pero sería interesante evaluar cuál es el impacto del mismo a la hora de entrenar la red. Sin dudas que al entrenar con menos recursos y utilizar una fracción del dataset algunas categorías pueden perderse. La métrica balanced accuracy contempla este problema por lo que es una muy buena elección. 
+
+# Preprocesamiento 
+
+Dado que el curso está centrado en redes neuronales, el procesamiento de datos de texto no fue estudiado en profundidad. Hubiese sido interesante conocer trabajar y manipular este tipo de datos sobretodo para aplicar redes más avanzadas. El preprocesamiento incluyó la eliminación de tags, signos de puntuación, espacios en blanco, y caracteres numéricos. También se eliminaron conjunciones y preposiciones al igual que palabras muy cortas. Por último se transformaron las palabras en un índices de un diccionario.
+
+# Redes neuronales
+
+La clasificación se realizó usando dos redes, por un lado, Multilayer Perceptron, y por otro, una red más avanzada, CNN. A continuación se muestran los resultados de los distintos experimentos realizados para cada una de las redes. 
+
+## Multilayer Perceptron (MLP)
+
+Con esta red se realizaron 6 experimentos. Los detalles de cada uno de ellos se encuentran dentro de la carpeta `mlruns` y la subcarpeta `mlp` que acompañan el presente reporte. Algunos experimentos se corrieron en Nabucodonosor mientras que otros en Google Colab.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+experimentos <- fs::dir_ls(glue::glue({"./mlruns_mlp/mlp/1"}), type = 'directory')
+
+print(experimentos)
+```
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+parametros_experimentos<- purrr::map_dfr(
+  .x = experimentos,
+  .f = function(experimento) {
+    
+    parametros <- fs::dir_ls(glue::glue("{experimento}/params"),
+                             type = 'file')
+    purrr::map_dfr(
+      .x = parametros,
+      .f = function(parametro) {
+        
+        valor_parametro <- readr::read_delim(parametro, delim = " ", col_names = FALSE) %>%
+          tibble::as_tibble() 
+        
+        if(ncol(valor_parametro) > 1) {
+          valor_parametro %<>% dplyr::mutate(X1 = paste0(X1, X2)) %>%
+            dplyr::pull(X1) %>%
+            as.character()
+        } else {
+          valor_parametro %<>% dplyr::pull(X1) %>%
+            as.character()
+        }
+        
+        # Devolver data frame con los parametros de cada experimento  
+        params <- data.frame(
+          experimento = sub('.*\\/', '', experimento),
+          parametro = sub('.*\\/', '', parametro),
+          valor = valor_parametro
+        )
+        
+      }
+      
+    )
+  }
+)
+ 
+resultados_experimentos<- purrr::map_dfr(
+  .x = experimentos,
+  .f = function(experimento) {
+    
+    metricas <- fs::dir_ls(glue::glue("{experimento}/metrics"),
+                             type = 'file')
+    purrr::map_dfr(
+      .x = metricas,
+      .f = function(metrica) {
+        
+        valor_metrica <- readr::read_delim(metrica, delim = " ", col_names = FALSE) %>%
+          tibble::as_tibble() %>%
+          dplyr::rename(accumulated_loss = X1, value = X2, epoch = X3) %>%
+          dplyr::mutate(metric = sub('.*\\/', '', metrica),
+                        experimento = sub('.*\\/', '', experimento)) %>%
+          dplyr::select(experimento, metric, everything())
+        
+      }
+      
+    )
+  }
+)   
+```
+
+### Experimento 1
+
+El primer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[1]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set de test y validación. La Figura \@ref(fig:experimento-1-mlp) muestra la evolución de la métrica a lo largo de 150 épocas. Cabe mencionar que se utilizó un dataset con 1 millón de observaciones para evitar problemas con la memoria RAM en Google Colab. 
+
+```{r experimento-1-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 1 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[1])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Test', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+Se observa un marcado amesetamiento de la curva lo que sugiere que ya se está entrenando con demasiada cantidad de épocas. 
+
+La Figura \@ref(fig:experimento-1-mlp) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-2-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 1 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[1])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Test', 'Train', 'Validation')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+Dado que la training loss es bastante menor que validation loss podríamos pensar que hay un sobreajuste en el modelo. Como el objeto es que la función de pérdida de validación sea lo más baja posible este sobreajuste debería ser corregido. 
+
+### Experimento 2
+
+El segundo experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[2]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-3-mlp) muestra la evolución de la métrica a lo largo de 3 épocas. 
+
+```{r experimento-3-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 2 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[2])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+La Figura \@ref(fig:experimento-4-mlp) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-4-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 2 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[2])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+En este caso al ser la validación menor que train se podría pensar en un subajuste del modelo pero la magnitud de esta diferencia es relativamente pequeña y dado que sólo se realizaron tres épocas es difícil concluir. 
+
+### Experimento 3
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[3]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-5-mlp) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-5-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 3 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[3])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+La Figura \@ref(fig:experimento-6-mlp) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-6-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 3 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[3])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+### Experimento 4
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[4]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-7-mlp) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-7-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 4 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[4])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+
+La Figura \@ref(fig:experimento-8-mlp) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-8-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 4 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[4])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+### Experimento 5
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[5]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-9-mlp) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-9-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 5 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[5])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+
+La Figura \@ref(fig:experimento-10-mlp) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-10-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 5 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[5])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+### Experimento 6
+
+El sexto experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[6]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-11-mlp) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-11-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 6 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[6])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+
+La Figura \@ref(fig:experimento-12-mlp) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-12-mlp, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 6 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[6])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+## Redes neuronales convolucionales
+
+Con esta red se realizaron 5 experimentos. Los detalles de cada uno de ellos se encuentran dentro de la carpeta `mlruns` y la subcarpeta `cnn` que acompañan el presente reporte. Algunos experimentos se corrieron en Nabucodonosor mientras que otros en Google Colab.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+experimentos <- fs::dir_ls(glue::glue({"./mlruns_cnn/cnn/1"}), type = 'directory')
+
+print(experimentos)
+```
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+parametros_experimentos<- purrr::map_dfr(
+  .x = experimentos,
+  .f = function(experimento) {
+    
+    parametros <- fs::dir_ls(glue::glue("{experimento}/params"),
+                             type = 'file')
+    purrr::map_dfr(
+      .x = parametros,
+      .f = function(parametro) {
+        
+        valor_parametro <- readr::read_delim(parametro, delim = " ", col_names = FALSE) %>%
+          tibble::as_tibble() 
+        
+        if(ncol(valor_parametro) > 1) {
+          valor_parametro %<>% dplyr::mutate(X1 = paste0(X1, X2)) %>%
+            dplyr::pull(X1) %>%
+            as.character()
+        } else {
+          valor_parametro %<>% dplyr::pull(X1) %>%
+            as.character()
+        }
+        
+        # Devolver data frame con los parametros de cada experimento  
+        params <- data.frame(
+          experimento = sub('.*\\/', '', experimento),
+          parametro = sub('.*\\/', '', parametro),
+          valor = valor_parametro
+        )
+        
+      }
+      
+    )
+  }
+)
+ 
+resultados_experimentos<- purrr::map_dfr(
+  .x = experimentos,
+  .f = function(experimento) {
+    
+    metricas <- fs::dir_ls(glue::glue("{experimento}/metrics"),
+                             type = 'file')
+    purrr::map_dfr(
+      .x = metricas,
+      .f = function(metrica) {
+        
+        valor_metrica <- readr::read_delim(metrica, delim = " ", col_names = FALSE) %>%
+          tibble::as_tibble() %>%
+          dplyr::rename(accumulated_loss = X1, value = X2, epoch = X3) %>%
+          dplyr::mutate(metric = sub('.*\\/', '', metrica),
+                        experimento = sub('.*\\/', '', experimento)) %>%
+          dplyr::select(experimento, metric, everything())
+        
+      }
+      
+    )
+  }
+)   
+```
+
+Los experimentos de CNN consistieron en modificar distintos hiperparámetros y arquitectura de la red. Principalmente se centraron en lo siguiente: 
+
+* Se experimento modificando Learning Rate y Weight Decay,
+* Se modificó la ultima capa usando Softmax y Relu,
+* Se cambiaron los tamaños de los batchs,
+* Se uso max pooling y avg pooling.
+
+### Experimento 1
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[1]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-1-cnn) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-1-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 1 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[1])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+La Figura \@ref(fig:experimento-2-cnn) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-2-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 1 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[1])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+### Experimento 2
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[2]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-3-cnn) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-3-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 2 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[2])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+
+La Figura \@ref(fig:experimento-4-cnn) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-4-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 2 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[2])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+### Experimento 3
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[3]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-5-cnn) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-5-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 3 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[3])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+
+La Figura \@ref(fig:experimento-6-cnn) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-6-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 3 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[3])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+### Experimento 4
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[4]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-7-cnn) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-7-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 4 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[4])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+
+La Figura \@ref(fig:experimento-8-cnn) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-8-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 4 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[4])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+### Experimento 5
+
+El tercer experimento se realizó con los siguientes parámetros.
+
+```{r, echo=FALSE, message = FALSE, warning = FALSE}
+knitr::kable(parametros_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[5]))) %>%
+  kableExtra::kable_styling() %>%
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+
+Para evaluar los resultados del entrenamiento se calculó el `balanced accuracy` para los set validación. La Figura \@ref(fig:experimento-9-cnn) muestra la evolución de la métrica a lo largo de 5 épocas. 
+
+```{r experimento-9-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado del Experimento 5 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[5])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'bacc'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c( 'Validación')) +
+  ggplot2::scale_x_continuous(breaks = seq(1, 150, 1)) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Balanced Accuracy')
+```
+
+La Figura \@ref(fig:experimento-10-cnn) muestra el resultado de la función de pérdida para los sets de validación y train. 
+
+```{r experimento-10-cnn, echo=FALSE, message=FALSE, warning=FALSE, out.width = "70%", fig.align = "center", fig.cap = "Resultado de la función de pérdida del Experimento 2 "}
+resultado <- resultados_experimentos %>%
+  dplyr::filter(experimento == sub('.*\\/', '', experimentos[2])) %>%
+  dplyr::filter(stringr::str_detect(metric, pattern = 'loss'))
+
+ggplot2::ggplot(data = resultado, ggplot2::aes(x = epoch + 1, y = value, color = metric)) +
+  ggplot2::geom_line() +
+  ggplot2::scale_color_discrete(name = 'Métrica', labels = c('Train', 'Validación')) +
+  ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = 'bottom') +
+  ggplot2::xlab('Epochs') + ggplot2::ylab('Loss')
+```
+
+# Conclusión
+
+La tarea demostró ser compleja tanto intelectualmente como en cuanto a los recursos necesarios para llevarla a cabo. Sin embargo, fue una muy interesante introducción a las redes neuronales y sobretodo en un contexto tan abstracto como el manejo de texto. Será necesario continuar para trabajar con redes más avanzadas como las RNN o transformers que demandan no solo una arquitectura diferente sino un preprocesamiento de los datos ad hoc. Sin embargo, a pesar de las dificultades de público conocimiento fue un desafío muy interesante que nos motiva a seguir adelante fuera de los requerimientos específicos de la diplomatura.Como proyecto futuro se continuará con evaluación sistemática de los hiperparámetros para asi tener una idea más acaba de su impactos sobre el presente dataset. 
+

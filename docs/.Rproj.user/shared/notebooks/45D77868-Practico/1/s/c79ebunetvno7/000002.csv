@@ -1,0 +1,9 @@
+"0","dataset_train <- vroom::vroom(""/Users/alessiobocco/Documents/Data_Science/Diplo_Datos/AprendizajeProfundo/data/meli-challenge-2019/spanish.train.csv"")"
+"2","[1mRows:[22m 6,119,100
+[1mColumns:[22m 4
+[1mDelimiter:[22m "",""
+[31mchr[39m [4]: language, label_quality, title, category
+
+[90mUse `spec()` to retrieve the guessed column specification[39m
+[90mPass a specification to the `col_types` argument to quiet this message[39m
+"

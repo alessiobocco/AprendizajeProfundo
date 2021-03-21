@@ -1,0 +1,581 @@
+---
+title: "Informe sobre Desafios AgTech 2020"
+subtitle: "Clasificación de cultivos utilizando imágenes satelitales"
+author:
+  - Alessio Bocco (boccoalessio@gmail.com)
+date: '`r format(as.Date("2020-12-15"), "%d de %B de %Y")`'
+output:
+  prettydoc::html_pretty:
+    css: styles.css
+    theme: cayman
+---
+
+```{r set-options, echo=FALSE}
+library("knitr")
+library(kableExtra)
+library(magrittr)
+options(width = 80)
+```
+
+# Introducción
+
+El presente documento contiene un breve descripción del flujo de trabajo realizado para la clasificación de coberturas a partir de imágenes satelitales. La clasificación de coberturas es una ardua tarea y más aún cuando las clases son tan similares entre sí como en el caso de los cultivos que pertenecen a una misma temporada, por ejemplo, soja temprana y tardía. Esto, junto a la relativa escasa cantidad de datos disponibles convierten esta tarea en una verdadero desafío. Un desafío no solo técnico sino también creativo. 
+
+Los distintos scripts usados en esta competencia se encuentran alojados en: https://github.com/alessiobocco/DesafioAgTech2020 
+
+# Pasos previos
+
+Antes de comenzar es necesario cargar todos los paquetes que serán utilizados en el presente documento. El análisis se realizó en R y Python por lo que se deben cargar los documentos para que estos lenguajes interactúen. 
+
+```{r, message=FALSE, warning=FALSE}
+# Instalar el paquete pacman que permite instalar y/o cargar los paquetes necesarios
+if (!require("pacman")) install.packages("pacman", repos = 'http://cran.us.r-project.org')
+
+# Instalar o cargar los paquetes necesarios
+pacman::p_load("dplyr", "here", "fs", "devtools", "glue", "readr", "sf", "progress", "ggfortify", "xts", "ggplot2", "lubridate", "leaflet", "reticulate", "sp", "raster",
+               "viridis", 'cowplot', 'knitr', 'kableExtra', 'purrr', 'reticulate')
+```
+
+# Caso de estudio
+
+El primer paso en el análisis consiste en la descripción del área en estudio y su caracterización. Para ello, se mostrarán los datos de entrada provistos por los organizadores de la competencia y relevados por la Bolsa de Comercio de Rosario y la Bolsa de Cereales de Buenos Aires. 
+
+```{r, messages = FALSE, echo = TRUE, warnings = FALSE}
+# Datos de train
+train <- read.csv("/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/data_train.csv") %>%
+  dplyr::mutate(train = 1)
+# Datos de test
+test <- read.csv("/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/data_test.csv") %>%
+  dplyr::mutate(train = 0)
+# Labels
+labels <- read.csv("/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/Etiquetas.csv")
+# Dataset completo 
+dataset <- train %>%
+  rbind(test) %>%
+  dplyr::left_join(., labels, by = c('Cultivo')) %>%
+  dplyr::mutate(lon = Longitud, lat = Latitud) %>%
+  sf::st_as_sf(., coords = c( 'Longitud', 'Latitud'), 
+              crs = '+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0') %>%
+  dplyr::mutate(Campania = if_else(Campania == "18/19", 2018, 2019))
+
+# Area de estudio
+area_estudio <- sf::st_read("/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/Gral_Lopez",
+  layer = 'Gral_Lopez') %>%
+  sf::st_transform(., '+proj=tmerc +lat_0=-90 +lon_0=-60 +k=1 +x_0=5500000 +y_0=0 +ellps=intl +twogs84=-148,136,90,0,0,0,0 +units=m +no_defs') %>%
+  sf::st_buffer(., dist = 10000) %>%
+  sf::st_transform(., '+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0')
+```
+
+El dataset completo que contiene la combinación del set de train y test se muestra a continuación: 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Vista de los datos provistos. 
+rmarkdown::paged_table(dataset[1:10,])
+
+```
+-   *Id*: Integer - Es el identificador del dataset particular para la salida a campo
+
+-   *Cultivo*: Character - Es el tipo de cultivo que se encuentra en el punto. Estos puntos han sido trasladados manualmente para encontrarse dentro del lote. Esta variable es el objetivo de la clasificación. 
+
+-   *Longitud*: Numeric - Coordenada angular.
+
+-   *Latitud*: Numeric - Coordenada angular.
+
+-   *Elevacion*: Numeric - Elevación del terreno.
+
+-   *Dataset*: Character - Proovedor de la verdad de campo. BC: Bolsa de Cereales de Buenos Aires; BCR: Bolsa de Comercio de Rosario.
+
+-   *Campania*: Character - Campaña de la cual ha sido obtenida la verdad de campo. Existen dos campañas: 18/19 y 19/20.
+
+-   *GlobalId*: Integer - Es el identificador global del dataset.
+
+Losa puntos se encuentran distribuidos en el Departamento de General López, Santa Fe (Argentina). En el siguiente mapa se muestra la distribución espacial de los puntos. Los puntos rojos corresponden a los datos de test, es decir, no tienen un cultivo asociado mientras que los azules corresponden a los datos de train y por lo tanto tienen toda la información sobre el mismo. Al hacer click en cada uno de los puntos se muestran las principales características de cada uno de ellos. 
+
+```{r, eval = TRUE, warnings = FALSE, messages = FALSE, fig.width = 6, fig.height = 6, fig.align = 'center'}
+# Rampa de colores
+pal <- colorFactor(palette = 'RdYlBu', domain = dataset$train)
+
+leaflet::leaflet(data = dataset) %>%
+  leaflet::addTiles() %>%
+    addMapPane("polygons", zIndex = 410) %>%
+  addMapPane("points", zIndex = 420) %>%
+  leaflet::setView(lat = -34, lng = -62, zoom = 8) %>%
+   addProviderTiles("Esri.WorldImagery") %>%
+  leaflet::addCircleMarkers(lat = ~lat, lng = ~lon, radius = 3, 
+                            stroke = FALSE, fillOpacity = 1, opacity = 1, 
+                            color = ~pal(train),
+                            popup = ~sprintf("<b>%s (%s)</b><br>Lat.: %.3f<br>Lon.: %.3f<br>Elev: %.0f m <br>Campania: %.0f",
+                                             Cultivo, Tipo, lat, lon, Elevacion, Campania),
+                            options = leafletOptions(pane = "points")) %>%
+    leaflet::addPolygons(data = area_estudio,  weight = 2, opacity = 1, color = "white", dashArray = "3",
+              fillOpacity = 0.1,
+              options = leafletOptions(pane = "polygons")) %>%
+  leaflet::addLegend(pal = pal, values = ~train, opacity = 1, title = NULL,
+  position = "bottomright")
+```
+
+Las coordenadas de estas observaciones son el punto de partida para la extracción de la información satelital pero antes de eso es necesario la descarga y procesamiento de las imágenes para esta región. 
+
+# Descarga de imágenes
+
+Existen numerosas fuentes de información satelital pública, cada una con características propias, con fortalezas y debilidades. Para esta tarea se prefirió el uso de Sentinel 2 ya que combina una muy buena resolución espectral con un tiempo de revisita menor a otras alternativas, lo que ayuda con problemas como la cobertura nubosa porque hay mayores probabilidades de obtener una imagen sin nubes. 
+Para la creación de los mosaicos mensuales se utilizó el paquete `rgee` que permite conectar el ambiente de R con Google Earth Engine y realizar gran parte del procesamiento en los servidores de Google. Con esta herramienta se generó una serie mensual de imágenes, en el caso que hubiese más de una imagen con un 10% de nubosidad los valores de cada píxel se agregaron utilizando la mediana. Cabe mencionar que para facilitar el procesamiento posterior y disminuir la carga de memoria, las imágenes se agregaron a una resolución de 30 metros. No se descargaron todas las bandas disponibles pero si las siguientes: 
+
+* B2: Azul (0.490 um)
+* B3: Verde (0.560 um)
+* B4: Rojo (0.665 um)
+* B5: Vegetación (0.705)
+* B6: Vegetación (0.740)
+* B7: Vegetación (0.783)
+* B8: NIR (0.842)
+* B8A: Vegetación (0.865)
+* B10: SWIR - Cirrus (1.375)
+* B11: SWIR (1.610)
+
+En la presente Figura se muestra un ejemplo de un índice espectral calculado a partir de la imagen Sentinel 2 correspondiente a noviembre de 2018. 
+
+```{r, eval = TRUE, warnings = FALSE, messages = FALSE,, echo=FALSE, fig.width = 6, fig.height = 6, fig.align = 'center'}
+imagen_sentinel <- raster::stack('/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/images/imagen_sentinel_2018_11.tif')
+names(imagen_sentinel) <- c('B2', 'B3', 'B4', 'B5','B6','B7','B8', 'B8A', 'B10', 'B11')
+
+# NDVI (Sentinel 2) = (B8 – B4) / (B8 + B4)
+
+ndvi <- (imagen_sentinel$B8 - imagen_sentinel$B4) / (imagen_sentinel$B8 + imagen_sentinel$B4)
+
+test_spdf <- as(ndvi, "SpatialPixelsDataFrame")
+test_df <- as.data.frame(test_spdf)
+colnames(test_df) <- c("value", "x", "y")
+
+ggplot() +  
+  geom_tile(data=test_df, aes(x=x, y=y, fill=value), alpha=0.8) + 
+  ggplot2::scale_fill_distiller(
+                                #palette = 'Greens',
+                                #direction = -1,
+                                limits = c(-1, 1), 
+                                breaks = seq(-1, 1, 0.2),
+                                name = 'NDVI') +
+  geom_sf(data=area_estudio, fill=NA, color="grey50", size=0.25) +
+  coord_sf() +
+  theme_map() +
+  theme(legend.position="bottom") +
+  theme(legend.key.width=unit(2, "cm"))
+```
+
+Como se mencionó más arriba, el preprocesamiento en Google Earth Engine no incluyó la creación de máscaras de nubes. Por ello se realizaron máscaras empíricas basadas en las bandas 2, 10 y 11. Se determinaron umbrales para cada una de estas bandas para detectar la presencia de nubes y sus sombras y mediante operaciones de ráster se eliminaron los pixeles cubiertos.
+
+Una vez descargadas las imágenes, una por cada mes del año de las Campañas 2018/2019 y 2019/2020, se extrajo la información correspondiente a cada uno de los puntos de los set de train y test mostrados anteriormente. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Se cargan las bandas correspondientes a cada uno de los puntos
+load("/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/dataset_satelite_observado.RData")
+```
+
+A continuación se visualizan los valores de las bandas extraídas de las imágenes de satélite
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+datos_satelite_observados <- dataset_satelite %>%
+  dplyr::select(contains(c('B2', 'B3', 'B4', 'B5','B6','B7','B8', 'B8A', 'B10', 'B11'))) %>%
+  cbind(dataset %>% sf::st_set_geometry(NULL)) %>%
+  tidyr::gather(imagen, valor, -c('Id', 'Cultivo', 'Elevacion', 'Dataset',
+                                  'Campania', 'GlobalId', 'train', 'CultivoId',
+                                  'Tipo', 'lon', 'lat')) 
+# Dimensiones
+dim(datos_satelite_observados)
+
+# Vista de los datos extraídos
+rmarkdown::paged_table(datos_satelite_observados[1:10,])
+```
+
+Debido a la presencia de nubes existen datos faltantes que deben ser imputados para no perder las observaciones que de por sí son escasas. La presencia de faltantes puede verse en la siguiente Figura. 
+
+```{r, eval=TRUE, message=FALSE, warning=FALSE, echo = FALSE}
+datos_validos_mes <- dataset_satelite %>%
+  dplyr::select(contains(c('B2', 'B3', 'B4', 'B5','B6','B7','B8', 'B8A', 'B10', 'B11'))) %>%
+  cbind(dataset %>% sf::st_set_geometry(NULL)) %>%
+  tidyr::gather(imagen, valor, -c('Id', 'Cultivo', 'Elevacion', 'Dataset',
+                                  'Campania', 'GlobalId', 'train', 'CultivoId',
+                                  'Tipo', 'lon', 'lat')) %>%
+  dplyr::mutate(ano = as.numeric(stringi::stri_sub(imagen, stringi::stri_locate_last_regex(imagen, "\\d{4}"))),
+                mes = as.numeric(stringr::str_extract(imagen, "\\d{1,2}$")),
+                banda = stringi::stri_match_first_regex(imagen, "(.*?)\\_")[,2]) %>%
+  dplyr::select(-imagen) %>% 
+  group_by(train, ano, mes) %>% 
+  dplyr::summarise(contar_na = sum(!is.na(valor))) %>%
+  dplyr::mutate(date = as.Date(paste0(ano, '/', mes, "/", 15L))) 
+
+set.labs <- c("Test", "Train")
+names(set.labs) <- c("0", "1")
+
+ggplot2::ggplot(datos_validos_mes, ggplot2::aes(x = date, y = contar_na)) +
+  ggplot2::geom_bar(stat = 'identity') +
+  ggplot2::scale_x_date(date_breaks = "2 month", date_labels = "%m-%y") +
+  ggplot2::labs(x = 'Mes', y = 'Datos válidos') +
+  ggplot2::theme_bw() +
+  ggplot2::facet_wrap(~train, ncol = 1, labeller = labeller(train = set.labs))
+```
+
+La Figura anterior muestra la cantidad de datos válidos por mes para cada uno de los set, train y test. Una imagen con todos sus píxeles válidos para las bandas descargadas tiene un total de 8500 pixeles para el set de train y 5550 para el set de test. Valores menores indican que las máscaras de nubes han removido píxeles no validos por lo que deben ser imputados. 
+Para el proceso de imputación se utilizó la librería `missForest` que utiliza árboles para la imputación de datos faltantes. Se trabajaron de manera independiente ambos set de datos para evitar la contaminación del set de test. 
+
+Al analizar la cantidad de datos disponibles se llegó a la conclusión de que podrían aumentarse la cantidad usada para entrenar el modelo al considerar los píxeles vecinos a cada punto observado. Para ello, se generó una grilla regular de 30 m de lado para toda el área en estudio. Luego sobre cada punto del set de train se crearon polígonos de Voronoi para asignarle una superficie a cada uno y también para evitar solapamientos entre puntos. Estos polígonos fueron luego recortados con un buffer de 120 m alrededor de cada punto observado para obtener así el área que efectivamente corresponde al mismo cultivo. Para evitar la contaminación de los datos complementarios de train por sobre los de test se eliminaron todos los puntos con una geometría identifica a los datos originales.
+
+```{r,eval=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+
+# Cargar dataset complementario
+load("/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/dataset_satelite_complemento_120.RData")
+
+# Cargar informacion complementaria de los puntos
+load("/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/grid_points_120.RData")
+
+dataset_satelite_complemento <- dataset_satelite_complemento %>%
+  dplyr::select(contains(c('B2', 'B3', 'B4', 'B5','B6','B7','B8', 'B8A', 'B10', 'B11'))) %>%
+  cbind(grid_points %>% sf::st_set_geometry(NULL)) %>%
+  dplyr::select(Id, Cultivo, Elevacion, Dataset, Campania, GlobalId,
+                train, CultivoId, Tipo, everything()) 
+
+# Dimensiones
+dim(dataset_satelite_complemento)
+
+# Vista de los datos extraídos
+rmarkdown::paged_table(dataset_satelite_complemento[1:10,])
+```
+
+Al incluir los vecinos más próximos a los puntos de train es posible incrementar la cantidad de datos para entrenar el modelo en gran medida al pasar de alrededor de 800 datos a más de 20 mil. La extracción del set de datos complementario de las imágenes ráster debió ser paralelizado para aprovechar la presencia de más núcleos y así disminuir el tiempo de procesamiento, que de otra forma, tomaba varias horas. 
+Al igual que para los puntos originales, la presencia de nubes genera datos faltantes. En este caso, por la cantidad de datos complementarios utilizar librerías como `missForest` implica un tiempo computacinal excesivo. Por este motivo es que los faltantes se rellenaron tomando la mediana de cada banda en función del Tipo de cobertura. Es decir, si el pixel faltante de noviembre de 2018 correspondía a soja, se tomó la mediana de todo los pixeles de esa imagen que tenían soja. 
+Otra característica del dataset es la confección de las series temporales de índices. Primero se definió un año agrícola que es diferente al año calendario, es decir, el primer mes del año comienza en julio mientras que el último es en agosto. Los puntos muestreados solo tendrán datos en el año agrícola correspondiente a su campaña. Es decir, una soja sembrada en Octubre de 2019 sólo tendrá datos para el año agrícola 2019, mientras que para los demás años tendrán valor 0.
+
+# Indices espectrales
+
+A partir de las bandas descargadas es posible calcular una variedad de índices espectrales que resumen las distintas bandas en único valor y tienen como objetivo describir determinadas propiedades de las coberturas como su grado de verdor, la humedad de suelo, el estado de la vegetación, etc. Los índices calculados a partir de las imágenes fueron los siguientes: 
+
+* NGRDI: Índice Normalizado de la Diferencia Verde-Roja: (B5 - B4)/(B5 + B4)
+* TGI: Índice Triangular de Verdor: −0.5 × [190 × (B4 − B3) − 120 × (B4 − B2)]
+* NDVI: Índice Normalizado de Diferencia de Vegetación: (B8 − B4) / (B8 + B4)
+* GNDVI: Índice Normalizado de Diferencia de Verdor: (B8 – B3) / (B8 + B3)
+* EVI: Índice de Vegetación Mejorado: 2.5 * (B8 – B4) / ((B8 + 6 * B4 – 7.5 * B2) + 1))
+* AVI: Índice de Vegetación Avanzado: [B8 * (1 – B4)*(B8 – B4)]^1/3
+* SAVI: Índice de Vegetación Ajustado por el Suelo: (B08 – B04) / (B08 + B04 + 0,428) * (1,428)
+* NDWI: Índice Normalizado de Diferencia de Agua: (B3 – B8) / (B3 + B8)
+* MSI: Índice de Estrés de Humedad: B11 / B8
+* BSI: Índice de suelo Desnudo: (B11 + B4) – (B8 + B2) / (B11 + B4) + (B8 + B2)
+* MCARI: Índice Modificado del Ratio de Absorción de Clorofila: ((B5 - B4) - 0.2 * (B5 - B3)) * (B5 / B4)
+* RED: Índice del borde Rojo: (B7 / B5)^-1
+* NDRE: Índice Norma;izado de la diferencia del borde Rojo: (B8A - B5)/(B8A + B5)
+* NDII: Índice Normalizado de la Diferencia Infrarroja: (B8A - B11) / (B8A + B11)
+
+# Creación de features
+
+Una vez que las series temporales de índices espectrales estaban listas y sin faltantes se crearon variables que resumían su comportamiento a lo largo del tiempo. Se calcularon variables para cada año agrícola en su totalidad y para cada una de las estaciones astronómicas (verano, otoño, invierno y primavera). Las medidas de resumen fueron la mediana, mínimo, máximo y desvío estándar. Estas medidas intentan capturar la variabilidad temporal y la dinmámica de acumulación de biomasa de los distintos cultivos. El resultado se observa a continuación. 
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+datos_resumnen <- read.csv('/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/dataset_satelite_resumen_anual_estacional.csv')
+
+# Dimensiones
+dim(datos_resumnen)
+
+# Vista de los datos extraídos
+rmarkdown::paged_table(datos_resumnen)
+```
+
+Del total de índices mostrados anteriormente, sólo se seleccionaron cuatro: "GNDVI", "SAVI", "MSI", "BSI". Se eligieron estos indices ya que contemplan diversas características de las coberturas. Sin embargo, se debería haber realizado una comprobación más exhaustiva al respecto para determinar los mejores indicadores.
+El dataset resultante combina para un mismo mes el valor de las dos campañas, es decir, los 24 valores (uno para cada mes del año de las dos campañas), ahora se organizan en sólo 12 y se eliminan los 0 creados en el paso anterior. Esto permite disminuir la cantidad de variables con información redundante que puede ser reemplazada por una variable dummy. 
+
+Al visualizar la distribución de las clases, tipos de cultivos, están fuertemente desbalanceadas. Esto será un problema a la hora de entrenar los distintos algoritmos de clasificación. 
+
+```{r, echo=FALSE}
+# Distribución de las clases
+ggplot2::ggplot(datos_resumnen %>% 
+                  dplyr::filter(train), ggplot2::aes(x = Tipo)) +
+  ggplot2::geom_bar() +
+  ggplot2::coord_flip() +
+  ggplot2::theme_bw() +
+  ggplot2::labs(x = 'Cantidad')
+```
+Los algoritmos tenderán a darle más peso a la clase mayoritaria. Es muy importante utilizar el scoring correcto ya que de otra manera se podrían estar incurriendo en falsas clasificaciones. Es decir, clasificando coberturas como la clase mayoritaria cuando en realidad se trata de otras con menor representación. 
+
+Analizar gráficamente tantas coberturas diferentes es complejo por lo que aquí se mostraran sólo las más relevantes en términos de cantidad. Cabe aclarar que en el análisis se incluyeron todas sin importar el desbalance. 
+
+```{r, echo=FALSE}
+ggplot2::ggplot(datos_resumnen %>%
+                  dplyr::filter(Tipo %in% c("SOJA 1", "MAIZ TEMP", "SOJA 2", "CAMPO NATURAL", "FORRAJES, PASTURAS, VERDEOS")), 
+                ggplot2::aes(x = GNDVI_verano_median, color = Tipo)) +
+  ggplot2::geom_density() +
+  ggplot2::theme_bw()
+```
+
+Una vez terminado el proceso de creación de features se prosigue con la clasificación de las coberturas 
+
+# Clasificación 
+
+Como primer paso, instalamos los paquetes necesarios. Esto se realiza porque en este reporte ha sido confeccionado en R y los algoritmos de clasificación se corrieron en Python. 
+
+```{r setup}
+library(reticulate)
+py_install("pandas")
+py_install("matplotlib")
+py_install("seaborn")
+py_install("scipy")
+py_install("imblearn", pip = TRUE) 
+py_install("xgboost")
+```
+
+Se importan los paquetes del ambiente virtual. En el repositorio se encuentra una versión separada del código donde R y Python no interactuan. Además allí se incluyen versiones preliminares de los modelos usados. 
+
+```{python}
+#Manejo de datos
+import pandas as pd
+import numpy as np
+
+#Gráficos
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+#Preprocesado, metricas y modelos
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from imblearn.pipeline import Pipeline, make_pipeline
+from sklearn.metrics import balanced_accuracy_score, accuracy_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, roc_auc_score, multilabel_confusion_matrix
+from imblearn.over_sampling import SMOTE
+from sklearn import preprocessing
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import make_column_selector as selector
+from imblearn.over_sampling import RandomOverSampler
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import confusion_matrix
+
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.ensemble import StackingClassifier
+from xgboost import XGBClassifier
+from sklearn.svm import LinearSVC
+#from mlxtend.classifier import StackingClassifier
+```
+
+Se carga el archivo con los datos creado en el paso anterior. 
+
+```{python}
+original_df = pd.read_csv('/Users/alessiobocco/Documents/Data_Science/Data_Challenges/DesafioAgTech2020/dataset/dataset_satelite_resumen_anual_estacional.csv') 
+
+original_df.shape
+```
+El dataset es separado en los set de train y test. Este último será usado para hacer las predicciones ya que no cuenta con etiquetas.
+
+```{python}
+# Crear dataset de train
+train = original_df[original_df.train == True].copy()
+train = train.drop([ 'train', 'GlobalId', 'Id', 'Cultivo', 'Dataset', 'Tipo'], axis=1)
+train = train.dropna()
+train = train.reset_index(drop=True)
+train.head()
+```
+
+```{python}
+# Crear dataset de test
+test = original_df[original_df.train == False]
+test = test.drop([  'train', 'CultivoId', 'GlobalId', 'Id', 'Cultivo', 'Dataset', 'Tipo'], axis=1)
+test.head()
+```
+
+Del set de train se extraen las etiquetas que serán el objetivo de la clasificación 
+
+```{python}
+labels = train.CultivoId
+train = train.drop(['CultivoId'], axis=1)
+```
+
+A partir del set de train original, es decir, el suministrados por los organizadores más los vecinos cercanos, se crean los set de train y test. Es importante no confundir la nomenclatura ya que estos dos data frases son muestras del set de train original.
+
+```{python}
+# Se separa el dataset para el ajuste de los algoritmos
+X_train, X_test, y_train, y_test = train_test_split(
+    train, labels, stratify=labels, random_state=42,
+    test_size = 0.3, shuffle = True
+)
+```
+El muestreo se realiza respetando las clases y con una semilla para asegurar la reproducibilidad de los resultados. 
+
+Dado que las variables pueden tener magnitudes diferentes se escalan los datos para evitar sesgos en la importancia de variables y se crean variables dummies para indicar cada una de las campañas agrícolas. 
+
+```{python, warnings = FALSE}
+scaler = StandardScaler().fit(X_train.loc[:, X_train.columns != 'Campania'])
+X_train.loc[:, X_train.columns != 'Campania'] = scaler.transform(X_train.loc[:, X_train.columns != 'Campania'])
+X_train = pd.get_dummies(X_train, columns=["Campania"])
+
+# Standarize test dataset
+X_test.loc[:, X_test.columns != 'Campania'] = scaler.transform(X_test.loc[:, X_test.columns != 'Campania'])
+X_test = pd.get_dummies(X_test, columns=["Campania"])
+```
+
+Los datos de test también son escalados con el mismo modelo usado con los datos de train. 
+
+```{python}
+test.loc[:, test.columns != 'Campania'] = scaler.transform(test.loc[:, test.columns != 'Campania'])
+test = pd.get_dummies(test, columns=["Campania"])
+```
+
+Para realizar el stacking se necesitan de algunas funciones auxiliares.
+
+```{python, eval = FALSE}
+from imblearn.pipeline import make_pipeline as make_pipeline_with_sampler
+
+num_pipe = make_pipeline(
+    StandardScaler(), SimpleImputer(strategy="mean", add_indicator=True)
+)
+cat_pipe = make_pipeline(
+    SimpleImputer(strategy="constant", fill_value="missing"),
+    OneHotEncoder(handle_unknown="ignore")
+)
+    
+preprocessor_linear = ColumnTransformer(
+    [("num-pipe", num_pipe, selector(dtype_include=np.number)),
+     ("cat-pipe", cat_pipe, selector(dtype_include=pd.CategoricalDtype))],
+    n_jobs=2
+)
+
+cat_pipe = make_pipeline(
+    SimpleImputer(strategy="constant", fill_value="missing"),
+    OrdinalEncoder()
+)
+
+preprocessor_tree = ColumnTransformer(
+    [("num-pipe", num_pipe, selector(dtype_include=np.number)),
+     ("cat-pipe", cat_pipe, selector(dtype_include=pd.CategoricalDtype))],
+    n_jobs=2
+)
+```
+
+Se probaron diversos algoritmos individualmente, como Random Forest, Logistic Regression, SVM, XGBoost, entre otros. Sin embargo, por si mismos no dieron buenos resultados porque la clase mayoritaria seguía pesando demasiado. Es por ello, que se decidió combinarlos en un stack.
+
+Una primera aproximación sólo con el modelo de `RandomForest` con over-sampling permitió evaluar la importancia de las distintas variables. En la siguiente figura se puede visualizar su peso en el algoritmo. 
+
+```{r, echo=FALSE}
+include_graphics('/Users/alessiobocco/Desktop/Importancia.png')
+```
+
+Es posible concluir que la Elevación de los puntos y los índices GNDVI de verano y otoño y SAVI anual fueron las variables más discriminantes. 
+
+Dado que el stacking incluye algoritmos que demandan etiquetas particulares se cambia el encoding de las etiquetas. 
+
+```{python, eval = FALSE}
+from sklearn import preprocessing
+# encode string class values as integers
+label_encoder = preprocessing.LabelEncoder()
+label_encoder = label_encoder.fit(labels)
+label_encoded_y_train = label_encoder.transform(y_train)
+label_encoded_y_test = label_encoder.transform(y_test)
+```
+
+Se define la lista de modelos que serán parte del stack. Estos son: 
+
+* LogisticRegression
+* KNeighborsClassifier
+* KNeighborsClassifier
+* DecisionTreeClassifier
+* RandomForestClassifier
+* ExtraTreesClassifier
+* XGBClassifier
+* MLPClassifier
+
+```{python,  eval = FALSE}
+from imblearn.pipeline import make_pipeline as make_pipeline_with_sampler
+
+
+# define the base models
+level0 = list()
+level0.append(('lr', make_pipeline_with_sampler(preprocessor_linear, RandomOverSampler(random_state=42), LogisticRegression(max_iter=1000))))
+level0.append(('knn', KNeighborsClassifier(n_jobs = 6)))
+level0.append(('cart', DecisionTreeClassifier()))
+level0.append(('rf', make_pipeline_with_sampler(preprocessor_tree, RandomOverSampler(random_state=42), RandomForestClassifier(random_state=42, n_jobs=2))))
+level0.append(('etr', ExtraTreesClassifier(n_jobs = 6)))
+level0.append(('xgb', XGBClassifier(n_jobs = 6)))
+level0.append(('ml', MLPClassifier(hidden_layer_sizes=(100,100,100), max_iter=10000, alpha=0.0001,
+                     solver='sgd',  random_state=21,tol=0.00001)))
+```
+
+Las probabilidades de los distintos modelos serán combinadas por una regresión logística. Luego se ajustarán cada uno de los modelos del nivel 0 y el meta modelo. 
+
+```{python, eval = FALSE}
+# define meta learner model
+level1 = LogisticRegression()
+# define the stacking ensemble
+model = StackingClassifier(estimators=level0, final_estimator=level1, cv=5, n_jobs = -1) 
+                          
+# fit the model on all available data
+model.fit(X_train, label_encoded_y_train)
+```
+
+```{r, echo=FALSE}
+include_graphics('/Users/alessiobocco/Desktop/Modelo.png')
+```
+
+Se visualiza el score luego de realizar el stack.
+
+```{python, eval = FALSE}
+clf_score_stack = balanced_accuracy_score(label_encoded_y_test, model.predict(X_test))
+
+print('Stack', clf_score_stack)
+```
+```{r, echo=FALSE}
+include_graphics('/Users/alessiobocco/Desktop/Balanced accuracy.png')
+
+```
+
+El clasificador tuvo una muy buena performance, mejor que la de los modelos individuales. Si bien computacionalmente es más demandante, el modelo es más robusto y permite una mejor generalización y un menor riesgo de overfitting. 
+
+El reporte de clasificación es una herramienta muy útil ya que combina diversas métricas para todas las clases. 
+
+```{python, eval = FALSE}
+print(classification_report(label_encoded_y_test,model.predict(X_test)))
+```
+
+```{r, echo=FALSE}
+include_graphics('/Users/alessiobocco/Desktop/Report.png')
+```
+
+Se observa que para la gran mayoría de las coberturas los resultados han sido muy buenos. Es particularmente bueno el resultado en las métricas ponderadas por el peso relativo de las clases. 
+
+Luego la matriz de confusión
+
+```{python, eval = FALSE}
+# # Print confusion matrix for stacking
+stack_confusion = confusion_matrix(label_encoded_y_test, model.predict(X_test))
+plt.figure(dpi=100)
+sns.heatmap(rf_confusion, cmap=plt.cm.Blues, annot=True, square=True, fmt='g')
+
+plt.xlabel('Predicted crop')
+plt.ylabel('Actual crop')
+plt.title('Stack confusion matrix');
+
+```
+Al tratarse de valores absolutos, la matriz puede ser un poco engañosa y dificil de ver cuando hay muchas clases. Se prefiere el uso del reporte antes mostrado. 
+
+```{r, echo=FALSE}
+include_graphics('/Users/alessiobocco/Desktop/Confusion_matrix.png')
+
+```
+Se usa el modelo para predecir los valores de las clases del set de datos de test y se prepara el dataframe para la submission
+
+```{python, eval = FALSE}
+y_test_pred = model.predict(test)
+y_test_pred = label_encoder.inverse_transform(y_test_pred)
+y_test_pred = y_test_pred.astype(int)
+submit = original_df[original_df.train == False]
+submission = pd.DataFrame(list(zip(submit.GlobalId, y_test_pred)), columns=["GlobalId", "CultivoId"])
+```
+
+Se guardan los resultados en el archivo .csv definitivo.
+
+```{python, eval = FALSE}
+submission.to_csv("../submission.csv", header=False, index=False)
+```
+
+Sin duda que esta primera iteración no tiene la capacidad de ser usada de manera operativa pero muestra la potencialidad que tienen estos algoritmos para capturar los patrones y generar mapas de coberturas con una razonable precisión. En una segunda etapa sería muy interesante seleccionar mejor los índices más adecuados para esta zona y ajustar mejor los hiperparámetros de los modelos. 

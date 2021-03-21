@@ -1,0 +1,17 @@
+"0","experimentos <- fs::dir_ls(glue::glue({""./mlruns/cnn/1""}), type = 'directory')"
+"0",""
+"0","print(experimentos)"
+"1","[01;34m./mlruns/cnn/1/23ebde03beb1493d8bb501079f671af1[0m
+"
+"1",""
+"1","[01;34m./mlruns/cnn/1/7ae725339f2340e9aece2661064cf30e[0m
+"
+"1",""
+"1","[01;34m./mlruns/cnn/1/82d5f741ff5f446cb18000e5e355f9c7[0m
+"
+"1",""
+"1","[01;34m./mlruns/cnn/1/e2ca84ce8e704a26a37a61bf1c9b23f6[0m
+"
+"1",""
+"1","[01;34m./mlruns/cnn/1/ec42c61062f24933bd05e096d4a23e6c[0m
+"
